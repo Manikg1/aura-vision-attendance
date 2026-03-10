@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AuraVision - Permanent Database Edition</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .video-flip { transform: scaleX(-1); }
+        .glass { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(20px); }
+        canvas { pointer-events: none; }
+    </style>
+</head>
+<body class="bg-slate-950 min-h-screen flex flex-col items-center p-4 font-sans text-slate-200">
+
+    <div class="max-w-4xl w-full space-y-6">
+        <div class="glass p-6 rounded-[2rem] border border-slate-800 shadow-2xl flex flex-col md:flex-row justify-between items-center gap-4">
+            <div>
+                <h1 class="text-2xl font-black text-white italic">AuraVision Pro</h1>
+                <p id="status" class="text-blue-400 text-[10px] font-bold uppercase tracking-widest mt-1">Booting Database...</p>
+            </div>
+            <div id="regForm" class="hidden flex gap-2">
+                <input id="empInput" type="text" placeholder="Employee Name" class="bg-slate-900 border border-slate-700 px-4 py-2 rounded-xl text-white text-sm outline-none focus:border-blue-500">
+                <button onclick="registerFace()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded-xl text-xs transition-all">REGISTER</button>
+                <button onclick="clearDatabase()" class="bg-red-900/50 hover:bg-red-600 text-white p-2 rounded-xl text-[10px]">RESET</button>
+            </div>
+        </div>
+
+        <div class="relative bg-black rounded-[2.5rem] overflow-hidden border-4 border-slate-800 shadow-2xl aspect-video">
+            <video id="video" class="absolute inset-0 w-full h-full object-cover video-flip" autoplay muted playsinline></video>
+            <canvas id="canvas" class="absolute inset-0 w-full h-full object-cover video-flip z-10"></canvas>
+            
+            <div id="successOverlay" class="hidden absolute inset-0 z-50 bg-emerald-500/20 backdrop-blur-md flex items-center justify-center">
+                <div class="bg-white p-8 rounded-[2rem] text-center shadow-2xl scale-110">
+                    <h2 class="text-3xl font-black text-slate-900">VERIFIED</h2>
+                    <p id="verifiedName" class="text-blue-600 font-black mt-1 text-xl uppercase italic"></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="glass rounded-[2rem] border border-slate-800 overflow-hidden shadow-2xl">
+            <div class="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
+                <h3 class="font-bold flex items-center gap-2">
+                    <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> Registered Staff
+                </h3>
+                <button onclick="downloadCSV()" class="text-[10px] bg-emerald-600 px-4 py-2 rounded-lg font-black uppercase tracking-widest">Download Report</button>
+            </div>
+            <div id="staffList" class="p-4 flex flex-wrap gap-2 text-xs">
+                </div>
+            <table class="w-full text-left text-xs border-t border-slate-800">
+                <tbody id="attendanceTable" class="divide-y divide-slate-800/30"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const canvas = document.getElementById('canvas');
+        const successOverlay = document.getElementById('successOverlay');
+        const verifiedName = document.getElementById('verifiedName');
+        const tableBody = document.getElementById('attendanceTable');
+        const staffListUI = document.getElementById('staffList');
+        const regForm = document.getElementById('regForm');
+
+        let registeredUsers = []; 
+        let markedEmployees = new Set();
+
+        function speak(text) {
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+        }
+
+        // --- DATABASE LOGIC START ---
+        function saveToLocal() {
+            // Hum descriptor (chehre ka data) ko string mein badalkar save karenge
+            const dataToSave = registeredUsers.map(user => ({
+                label: user.label,
+                descriptor: Array.from(user.descriptor)
+            }));
+            localStorage.setItem('auraVisionStaff', JSON.stringify(dataToSave));
+        }
+
+        function loadFromLocal() {
+            const savedData = localStorage.getItem('auraVisionStaff');
+            if (savedData) {
+                const parsedData = JSON.parse(savedData);
+                registeredUsers = parsedData.map(user => ({
+                    label: user.label,
+                    descriptor: new Float32Array(user.descriptor)
+                }));
+                updateStaffUI();
+            }
+        }
+
+        function updateStaffUI() {
+            if (registeredUsers.length > 0) {
+                staffListUI.innerHTML = registeredUsers.map(u => 
+                    `<span class="bg-blue-900/30 border border-blue-500/30 text-blue-400 px-3 py-1 rounded-full uppercase font-bold">✅ ${u.label}</span>`
+                ).join('');
+            }
+        }
+
+        function clearDatabase() {
+            if (confirm("Kya aap saara data delete karna chahte hain?")) {
+                localStorage.removeItem('auraVisionStaff');
+                location.reload();
+            }
+        }
+        // --- DATABASE LOGIC END ---
+
+        async function init() {
+            loadFromLocal(); // Purana data load karo
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+                
+                status.innerText = "Syncing AI... (10s)";
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                ]);
+                
+                status.innerText = "System Ready - Permanent Memory Active";
+                regForm.classList.remove('hidden');
+                startDetection();
+            } catch (e) {
+                status.innerText = "Error: Camera Access Denied!";
+            }
+        }
+
+        async function registerFace() {
+            const name = document.getElementById('empInput').value.trim();
+            if (!name) return alert("Enter Name!");
+
+            status.innerText = "Capturing Face Data...";
+            const detect = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.1 }))
+                                .withFaceLandmarks().withFaceDescriptor();
+
+            if (detect) {
+                registeredUsers.push({ label: name, descriptor: detect.descriptor });
+                saveToLocal(); // Browser memory mein save karo
+                updateStaffUI();
+                document.getElementById('empInput').value = "";
+                status.innerText = "Profile Saved Permanently!";
+                speak(name + " added to database.");
+            } else {
+                alert("Face not detected. Stand in better light.");
+            }
+        }
+
+        async function startDetection() {
+            setInterval(async () => {
+                const detects = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.25 }))
+                                     .withFaceLandmarks().withFaceDescriptors();
+                
+                if (detects.length > 0 && registeredUsers.length > 0) {
+                    const matcher = new faceapi.FaceMatcher(registeredUsers.map(u => 
+                        new faceapi.LabeledFaceDescriptors(u.label, [u.descriptor])), 0.5);
+
+                    detects.forEach(d => {
+                        const match = matcher.findBestMatch(d.descriptor);
+                        if (match.label !== 'unknown') {
+                            markPresent(match.label);
+                        }
+                    });
+                }
+            }, 600);
+        }
+
+        function markPresent(name) {
+            if (markedEmployees.has(name)) return;
+            markedEmployees.add(name);
+            verifiedName.innerText = name;
+            successOverlay.classList.remove('hidden');
+            speak("Welcome " + name);
+
+            const row = `<tr><td class="px-6 py-4 font-bold text-white uppercase">${name}</td><td class="px-6 py-4 text-slate-400 font-mono">${new Date().toLocaleTimeString()}</td><td class="px-6 py-4 text-emerald-400 font-black text-right italic">LOGGED</td></tr>`;
+            tableBody.innerHTML = row + tableBody.innerHTML;
+            setTimeout(() => { successOverlay.classList.add('hidden'); }, 3000);
+        }
+
+        function downloadCSV() {
+            let csv = "Employee,Time,Status\n";
+            document.querySelectorAll("#attendanceTable tr").forEach(tr => {
+                const row = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.replace(',', ' '));
+                csv += row.join(",") + "\n";
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `AuraVision_Report.csv`;
+            a.click();
+        }
+
+        init();
+    </script>
+</body>
+</html>
